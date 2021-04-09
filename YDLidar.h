@@ -9,61 +9,11 @@
 #pragma once
 
 #include "Arduino.h"
-#include "inc/v8stdint.h"
 
-
-#define LIDAR_CMD_STOP                      0x65
-#define LIDAR_CMD_SCAN                      0x60
-#define LIDAR_CMD_FORCE_SCAN                0x61
-#define LIDAR_CMD_RESET                     0x80
-#define LIDAR_CMD_FORCE_STOP                0x00
-#define LIDAR_CMD_GET_EAI                   0x55
-#define LIDAR_CMD_GET_DEVICE_INFO           0x90
-#define LIDAR_CMD_GET_DEVICE_HEALTH         0x92
-#define LIDAR_CMD_SYNC_BYTE                 0xA5
-#define LIDAR_CMDFLAG_HAS_PAYLOAD           0x8000
-
-#define LIDAR_ANS_TYPE_DEVINFO              0x4
-#define LIDAR_ANS_TYPE_DEVHEALTH            0x6
-#define LIDAR_ANS_SYNC_BYTE1                0xA5
-#define LIDAR_ANS_SYNC_BYTE2                0x5A
-#define LIDAR_ANS_TYPE_MEASUREMENT          0x81
-
-#define LIDAR_RESP_MEASUREMENT_SYNCBIT        (0x1<<0)
-#define LIDAR_RESP_MEASUREMENT_QUALITY_SHIFT  2
-#define LIDAR_RESP_MEASUREMENT_CHECKBIT       (0x1<<0)
-#define LIDAR_RESP_MEASUREMENT_ANGLE_SHIFT    1
-#define LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT    8
-
-
-#define LIDAR_CMD_RUN_POSITIVE             0x06
-#define LIDAR_CMD_RUN_INVERSION            0x07
-#define LIDAR_CMD_SET_AIMSPEED_ADDMIC      0x09
-#define LIDAR_CMD_SET_AIMSPEED_DISMIC      0x0A
-#define LIDAR_CMD_SET_AIMSPEED_ADD         0x0B
-#define LIDAR_CMD_SET_AIMSPEED_DIS         0x0C
-#define LIDAR_CMD_GET_AIMSPEED             0x0D
-#define LIDAR_CMD_SET_SAMPLING_RATE        0xD0
-#define LIDAR_CMD_GET_SAMPLING_RATE        0xD1
-
-#define LIDAR_STATUS_OK                    0x0
-#define LIDAR_STATUS_WARNING               0x1
-#define LIDAR_STATUS_ERROR                 0x2
-
-#define PackageSampleBytes 2
 #define PackageSampleMaxLngth 0x80
-#define Node_Default_Quality (10<<2)
-#define Node_Sync 1
-#define Node_NotSync 2
-#define PackagePaidBytes 10
-#define PH 0x55AA
-
-
-typedef enum {
-	CT_Normal = 0,
-	CT_RingStart  = 1,
-	CT_Tail,
-}CT;
+#define DEFAULT_TIMEOUT 500
+//Max samples limited to 1 byte according to LSN size
+#define MAX_SAMPLES 255
 
 struct node_info {
 	uint8_t    sync_quality;
@@ -128,27 +78,73 @@ struct scanPoint {
 	bool    startBit;
 };
 
+typedef struct  {
+	float angle;
+	uint16_t distance;
+} scan_point_t;
 
-#if defined(_WIN32)
-#pragma pack(1)
-#endif
+typedef struct  {
+	scan_point_t points[MAX_SAMPLES];
+	uint8_t samples;
+} scan_data_t;
 
+typedef enum 
+{
+	CT_Normal = 0,
+	CT_RingStart  = 1,
+	CT_valid_types
+}CT;
+	
+
+typedef struct  {
+	CT   package_type;
+	uint8_t   sample_qty;
+	uint16_t  FirstSampleAngle;
+	uint16_t  LastSampleAngle;
+	uint16_t  checksum;
+} scan_content_metadata_t;
+
+
+typedef enum
+{
+	scanpacket_ok=0,
+	scanpacket_timeout,
+	scanpacket_checksum_mismatch
+}scan_packet_error_et;
+
+
+
+typedef enum ydlidar_result_e
+{
+	RESULT_OK=0,
+	RESULT_TIMEOUT,
+	RESULT_FAIL,
+	ydlidar_null_serial,
+	ydlidar_wrong_type,
+	ydlidar_serial_closed,
+	ydlidar_wrong_header_type,
+	ydlidar_wrong_header_size,
+	ydlidar_packet_error
+}ydlidar_result_et;
 
 //YDLidar class
 class YDLidar
 {
 public:
-    enum {
-        SERIAL_BAUDRATE = 115200,  
-        DEFAULT_TIMEOUT = 500,
-    };
+	typedef enum ydlidar_types_e
+	{
+		TX8=0,
+		X4=1,
+		ydlidar_total_types
+	}ydlidar_types_et;
+	
     //construct
     YDLidar();  
     //destructor
     ~YDLidar();
 
     // open the given serial interface and try to connect to the YDLIDAR
-    bool begin(HardwareSerial &serialobj, uint32_t baudrate =SERIAL_BAUDRATE);
+    ydlidar_result_et begin(HardwareSerial &serialobj, ydlidar_types_et ydlidar_type=X4);
 
     // close the currently opened serial interface
     void end(void);
@@ -157,33 +153,34 @@ public:
     bool isOpen(void); 
 
     // ask the YDLIDAR for its health info
-    result_t getHealth(device_health & health, uint32_t timeout = DEFAULT_TIMEOUT);
+    ydlidar_result_et getHealth(device_health & health, uint32_t timeout = DEFAULT_TIMEOUT);
     
     // ask the YDLIDAR for its device info like the serial number
-    result_t getDeviceInfo(device_info & info, uint32_t timeout = DEFAULT_TIMEOUT);
+    ydlidar_result_et getDeviceInfo(device_info & info, uint32_t timeout = DEFAULT_TIMEOUT);
 
     // stop the scanPoint operation
-    result_t stop(void);
+    ydlidar_result_et stop(void);
 
     // start the scanPoint operation
-    result_t startScan(bool force = false, uint32_t timeout = DEFAULT_TIMEOUT*2);
+    ydlidar_result_et startScan(bool force = false, uint32_t timeout = DEFAULT_TIMEOUT*2);
 
     // wait for one sample package to arrive
-    result_t waitScanDot(uint32_t timeout = DEFAULT_TIMEOUT);
+    ydlidar_result_et waitScanDot(uint32_t timeout = DEFAULT_TIMEOUT);
     
     // retrieve currently received sample point
     const scanPoint & getCurrentScanPoint(void)
     {
         return point;
     }
-
+	scan_data_t scan_data;
 protected:
+	
+	scan_packet_error_et get_scan_packet(scan_content_metadata_t * metadata,unsigned long long timeout);
+	ydlidar_types_et _type;
     // send ask commond to YDLIDAR
-    result_t sendCommand(uint8_t cmd, const void * payload = NULL, size_t payloadsize = 0);
+    ydlidar_result_et sendCommand(uint8_t cmd, const void * payload = NULL, size_t payloadsize = 0);
     //wait for response header to arrive
-    result_t waitResponseHeader(lidar_ans_header * header, uint32_t timeout = DEFAULT_TIMEOUT);
-
-protected:
+    ydlidar_result_et waitResponseHeader(lidar_ans_header * header, uint32_t timeout = DEFAULT_TIMEOUT);
     HardwareSerial * _bined_serialdev;  
     scanPoint point;
 };
