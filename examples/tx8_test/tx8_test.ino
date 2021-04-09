@@ -1,24 +1,14 @@
-/*
-    YDLIDAR SYSTEM
-    YDLIDAR Arduino
-
-    Copyright 2015 - 2018 EAI TEAM
-    http://www.eaibot.com
-
-*/
-
 #include <YDLidar.h>
 
-// You need to create an driver instance
 YDLidar lidar;
 
-bool isScanning = false;
-
-
+#define RX_PIN 19
+#define TX_PIN 18
 
 void setup() {
-
-  lidar.begin(Serial, YDLidar::TX8);
+  Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+  Serial.println("Starting TX8 Demo");
+  lidar.begin(Serial1, YDLidar::TX8);
 }
 
 void loop() {

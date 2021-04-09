@@ -61,6 +61,7 @@
 #define PackagePaidBytes 10
 //Packet header constant
 #define SIZE_PACKET_HEADER 2
+#define PH_LSB 0xAA
 #define PH 0x55AA
 
 #define SCAN_METADATA_SIZE 8
@@ -93,6 +94,11 @@ uint32_t ydlidar_baudrates[YDLidar::ydlidar_total_types]=
   LOCAL FUNCTIONS
 */
 
+//Unit mm
+float angle_conversion(uint16_t raw_angle)
+{
+	return (raw_angle>>1)/64.0;
+}
 metadata_error_et parse_metadata(uint8_t * pData,scan_content_metadata_t * metadata)
 {
 	metadata_error_et result = metadata_ok;
@@ -103,29 +109,26 @@ metadata_error_et parse_metadata(uint8_t * pData,scan_content_metadata_t * metad
 		metadata->FirstSampleAngle 	=	pData[3]<<8 | pData[2];
 		metadata->LastSampleAngle		=	pData[5]<<8 | pData[4];
 		metadata->checksum		= 	pData[7]<<8 | pData[6];
+
 		if(metadata->package_type >CT_valid_types)
 		{
 			result=metadata_packagetpe_error;
 			break;
 		}
 	}while(0);
-}
-//Unit mm
-uint16_t inline distance_conversion(uint16_t raw_distance)
-{
-	return raw_distance*256;
+	return result;
 }
 
-//Unit mm
-float inline angle_conversion(uint16_t raw_angle)
-{
-	return (raw_angle>>1)/64.0;
-}
 
 //Unit °
-float inline intermediate_angle(float angle_diff,uint16_t sample_qty,float start_angle,uint8_t sample)
+float intermediate_angle(float angle_diff,uint16_t sample_qty,float start_angle,uint8_t sample)
 {
-	return ((angle_diff/(sample_qty-1))*(sample-1))+start_angle;
+	float angle=  ((angle_diff/(sample_qty-1))*(sample-1))+start_angle;
+	if (angle>360.0f)
+	{
+		angle-=360.0f;
+	}
+	return angle;
 }
 
 /*
@@ -145,6 +148,24 @@ YDLidar::~YDLidar()
 {
     end();
 }
+
+//Unit mm
+uint16_t YDLidar::get_distance(uint16_t raw_distance)
+{
+	uint16_t distance=0xFFFF;
+	if(_type==TX8)
+	{
+		uint8_t lsb=raw_distance & 0xFF;
+		uint8_t msb=raw_distance >>8;
+		distance= lsb + (msb*256);
+	}
+	if(_type==X4)
+	{
+		distance=raw_distance/4;
+	}
+	return distance;
+}
+
 
 // open the given serial interface and try to connect to the YDLIDAR
 ydlidar_result_et YDLidar::begin(HardwareSerial &serialobj,ydlidar_types_et ydlidar_type)
@@ -166,11 +187,11 @@ ydlidar_result_et YDLidar::begin(HardwareSerial &serialobj,ydlidar_types_et ydli
 		if (isOpen()) {
 		  end(); 
 		}
-		
-		_bined_serialdev = &serialobj;
-		_bined_serialdev->end();
-		_bined_serialdev->begin(ydlidar_baudrates[ydlidar_type]);
 		_type=ydlidar_type;
+		_bined_serialdev = &serialobj;
+		//_bined_serialdev->end();
+		//_bined_serialdev->begin(ydlidar_baudrates[(int)ydlidar_type]);
+
 	}while(0);
 	return result;
 }
@@ -389,7 +410,7 @@ scan_packet_error_et YDLidar::get_scan_packet(scan_content_metadata_t * metadata
 	{
 		uint16_t buffer_idx = 0;
 		bool scan_packet_complete=false;
-		uint16_t sample_data_size=0;
+		uint16_t expected_bytes=0;
 		unsigned long long startTs=millis();
 		while (!scan_packet_complete)
 		{
@@ -403,6 +424,11 @@ scan_packet_error_et YDLidar::get_scan_packet(scan_content_metadata_t * metadata
 			{
 				continue;
 			}
+			//Store rx buffer until possible ph_lsb is recieved
+			if (buffer_idx == 0 && currentByte!=PH_LSB)
+			{
+				continue;
+			}
 			scanpackage_buffer[buffer_idx++] = currentByte;
 			if (buffer_idx == SIZE_PACKET_HEADER)
 			{
@@ -410,27 +436,26 @@ scan_packet_error_et YDLidar::get_scan_packet(scan_content_metadata_t * metadata
 				if(recv_ph!=PH)
 				{
 					buffer_idx=0;
+					continue;
 				}
 			}
 			if (buffer_idx == SIZE_PACKET_HEADER+SCAN_METADATA_SIZE)
 			{
 				metadata_error_et metadata_error=parse_metadata(&scanpackage_buffer[SIZE_PACKET_HEADER],
 																metadata);
+				
 				if(metadata_error!=metadata_ok)
 				{
 					buffer_idx=0;
 				}
 				else
 				{
-					sample_data_size = metadata->sample_qty * SCAN_SAMPLE_SIZE;
+					expected_bytes = SCAN_SAMPLE_OFFSET+(metadata->sample_qty * SCAN_SAMPLE_SIZE);
 				}
 			}
-			else
+			else if(buffer_idx==expected_bytes)
 			{
-				if(buffer_idx == SCAN_SAMPLE_OFFSET +sample_data_size)
-				{
-					scan_packet_complete=true;
-				}
+				scan_packet_complete=true;
 			}
 		}
 		if(scan_packet_complete)
@@ -440,11 +465,11 @@ scan_packet_error_et YDLidar::get_scan_packet(scan_content_metadata_t * metadata
 			checksum ^= metadata->FirstSampleAngle;
 			for(uint8_t sample_no=0;sample_no < metadata->sample_qty; sample_no++)
 			{
-				uint16_t buffer_index=SCAN_SAMPLE_OFFSET + (SCAN_SAMPLE_SIZE*sample_no);
-				uint16_t sample_i=scanpackage_buffer[buffer_index+1]<<8 | scanpackage_buffer[buffer_index];
+				uint16_t index=SCAN_SAMPLE_OFFSET + (SCAN_SAMPLE_SIZE*sample_no);
+				uint16_t sample_i= (scanpackage_buffer[index+1]<<8) | scanpackage_buffer[index];
 				checksum ^= sample_i;
 			}
-			checksum ^= ((uint8_t)metadata->package_type <<8) | metadata->sample_qty;
+			checksum ^= (((uint8_t) metadata->sample_qty  <<8) |metadata->package_type);
 			checksum ^= metadata->LastSampleAngle;
 			if(checksum != metadata->checksum)
 			{
@@ -474,10 +499,31 @@ ydlidar_result_et YDLidar::waitScanDot( uint32_t timeout)
 
 		float start_angle=angle_conversion(metadata.FirstSampleAngle);
 		float end_angle=angle_conversion(metadata.LastSampleAngle);
-		float angle_diff=end_angle-start_angle;
+		float angle_diff;
+		if(end_angle<start_angle)
+		{
+			angle_diff=(360.0f - start_angle)+end_angle;
+		}
+		else
+		{
+			angle_diff=end_angle-start_angle;
+		}
+			
+		/*
+		Serial.print("Samples: ");
+		Serial.print(metadata.sample_qty);
+		Serial.print(" FSA:");
+		Serial.print(start_angle);
+		Serial.print(" LSA:");
+		Serial.print(end_angle);
+		Serial.print(" Angle Diff:");
+		Serial.println(angle_diff);
+		*/
+		scan_data.start_angle=start_angle;
+		scan_data.end_angle=end_angle;
 		for(uint8_t sample=0;sample < metadata.sample_qty; sample++)
 		{
-			uint16_t distance_i=sample_data[0] | sample_data[1]<<8;
+			uint16_t raw_distance=sample_data[0] | sample_data[1]<<8;
 			if(sample > 0 && sample < (metadata.sample_qty-1))
 			{
 				scan_data.points[sample].angle=intermediate_angle(angle_diff,
@@ -492,9 +538,23 @@ ydlidar_result_et YDLidar::waitScanDot( uint32_t timeout)
 			{
 				scan_data.points[sample].angle=end_angle;
 			}
-			scan_data.points[sample].distance=distance_conversion(distance_i);
-			sample_data++;
+			scan_data.points[sample].distance=get_distance(raw_distance);	
+			sample_data+=SCAN_SAMPLE_SIZE;
 		}
+		/*
+		for(uint8_t sample=0;sample < metadata.sample_qty; sample++)
+		{
+			Serial.print(scan_data.points[sample].angle);
+			Serial.print("\t");
+		}
+		Serial.println();
+		for(uint8_t sample=0;sample < metadata.sample_qty; sample++)
+		{
+			Serial.print(scan_data.points[sample].distance);
+			Serial.print("\t");
+		}
+		Serial.println();
+		*/
 		
 	}while(0);
 	return result;

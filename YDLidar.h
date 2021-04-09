@@ -86,6 +86,8 @@ typedef struct  {
 typedef struct  {
 	scan_point_t points[MAX_SAMPLES];
 	uint8_t samples;
+	float start_angle;
+	float end_angle;
 } scan_data_t;
 
 typedef enum 
@@ -174,7 +176,7 @@ public:
     }
 	scan_data_t scan_data;
 protected:
-	
+	uint16_t get_distance(uint16_t raw_distance);
 	scan_packet_error_et get_scan_packet(scan_content_metadata_t * metadata,unsigned long long timeout);
 	ydlidar_types_et _type;
     // send ask commond to YDLIDAR
